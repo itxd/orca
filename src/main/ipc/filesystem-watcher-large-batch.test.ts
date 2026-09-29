@@ -1,3 +1,4 @@
+import { createWatcherSender } from './filesystem-watcher-test-sender'
 import { join, resolve } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -68,15 +69,12 @@ describe('local filesystem watcher large batches', () => {
       return { unsubscribe: vi.fn() } as never
     })
 
-    await handlers['fs:watchWorktree'](
-      { sender: { isDestroyed: () => false, send: vi.fn(), once: vi.fn(), id: 1 } },
-      { worktreePath }
-    )
+    await handlers['fs:watchWorktree']({ sender: createWatcherSender(1) }, { worktreePath })
 
-    const events = Array.from(
-      { length: 200_000 },
-      (_, index): WatcherEvent => ({ type: 'delete', path: join(worktreePath, `file-${index}`) })
-    )
+    const events = Array.from({ length: 200_000 }, (_, index): WatcherEvent => ({
+      type: 'delete',
+      path: join(worktreePath, `file-${index}`)
+    }))
 
     expect(() => watcherCallback?.(null, events)).not.toThrow()
     await closeAllWatchers()
@@ -92,18 +90,15 @@ describe('local filesystem watcher large batches', () => {
       return { unsubscribe: vi.fn() } as never
     })
     const worktreePath = resolve('/tmp/repo')
-    const sender = { isDestroyed: () => false, send: vi.fn(), once: vi.fn(), id: 1 }
+    const sender = createWatcherSender(1)
 
     await handlers['fs:watchWorktree']({ sender }, { worktreePath })
     watcherCallback?.(
       null,
-      Array.from(
-        { length: 5_001 },
-        (_, index): WatcherEvent => ({
-          type: 'update',
-          path: join(worktreePath, `file-${index}.txt`)
-        })
-      )
+      Array.from({ length: 5_001 }, (_, index): WatcherEvent => ({
+        type: 'update',
+        path: join(worktreePath, `file-${index}.txt`)
+      }))
     )
 
     await vi.advanceTimersByTimeAsync(150)
@@ -127,7 +122,7 @@ describe('local filesystem watcher large batches', () => {
     })
     const worktreePath = resolve('/tmp/repo')
     const filePath = join(worktreePath, 'a.ts')
-    const sender = { isDestroyed: () => false, send: vi.fn(), once: vi.fn(), id: 1 }
+    const sender = createWatcherSender(1)
 
     await handlers['fs:watchWorktree']({ sender }, { worktreePath })
     watcherCallback?.(null, [{ type: 'update', path: filePath }])
@@ -155,7 +150,7 @@ describe('local filesystem watcher large batches', () => {
       return { unsubscribe: vi.fn() } as never
     })
     const worktreePath = resolve('/tmp/repo')
-    const sender = { isDestroyed: () => false, send: vi.fn(), once: vi.fn(), id: 1 }
+    const sender = createWatcherSender(1)
 
     await handlers['fs:watchWorktree']({ sender }, { worktreePath })
     // Step under the trailing window so only the max wait can force a flush.

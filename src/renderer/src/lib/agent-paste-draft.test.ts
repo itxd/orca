@@ -13,6 +13,7 @@ import {
   sendBracketedPasteToRunningAgent,
   submitPromptToAgentPty
 } from './agent-paste-draft'
+import { TUI_AGENT_CONFIG } from '../../../shared/tui-agent-config'
 
 const testState = vi.hoisted(() => ({
   appState: {
@@ -56,7 +57,9 @@ vi.mock('@/components/terminal-pane/pty-pre-handler-buffer', () => ({
 
 vi.mock('@/runtime/runtime-terminal-inspection', () => ({
   isRemoteRuntimePtyId: testState.isRemoteRuntimePtyId,
-  sendRuntimePtyInputVerified: testState.sendRuntimePtyInputVerified,
+  // Why drop the kind: this suite pins write shapes; startup-draft-input-kind.test.ts pins kinds.
+  sendRuntimePtyInputVerified: (settings: unknown, ptyId: string, data: string) =>
+    testState.sendRuntimePtyInputVerified(settings, ptyId, data),
   inspectRuntimeTerminalProcess: testState.inspectRuntimeTerminalProcess
 }))
 
@@ -70,6 +73,7 @@ const CODEX_COMPOSER_PROMPT_RENDER = '\x1b[1m›\x1b[0m Ask Codex to do anything
 const CODEX_DYNAMIC_COMPOSER_PROMPT_RENDER = '\x1b[?1049h\x1b[1m›\x1b[0m Implement {feature}'
 const ISSUE_URL = 'https://github.com/stablyai/orca/issues/123'
 const PASTED_ISSUE_URL = `\x1b[200~${ISSUE_URL}\x1b[201~`
+const CODEX_SUBMIT_RETRY_DELAY_MS = TUI_AGENT_CONFIG.codex.submitRetryDelayMs ?? 0
 
 describe('pasteDraftWhenAgentReady', () => {
   beforeEach(() => {
@@ -169,7 +173,7 @@ describe('pasteDraftWhenAgentReady', () => {
       'pty-1',
       PASTED_ISSUE_URL
     )
-    await vi.advanceTimersByTimeAsync(POST_PASTE_SUBMIT_DELAY_MS)
+    await vi.advanceTimersByTimeAsync(POST_PASTE_SUBMIT_DELAY_MS + CODEX_SUBMIT_RETRY_DELAY_MS)
     await expect(promise).resolves.toBe(true)
     expect(testState.sendRuntimePtyInputVerified).toHaveBeenNthCalledWith(2, {}, 'pty-1', '\r')
     expect(testState.unsubscribe).toHaveBeenCalledTimes(1)
@@ -338,7 +342,7 @@ describe('pasteDraftWhenAgentReady', () => {
     expect(testState.sendRuntimePtyInputVerified).not.toHaveBeenCalled()
 
     // Only the hard timeout (and failed process check) resolves it — to false.
-    await vi.advanceTimersByTimeAsync(8000)
+    await vi.advanceTimersByTimeAsync(20_000)
     await flushMicrotasks(5)
     await vi.advanceTimersByTimeAsync(1000)
     await expect(promise).resolves.toBe(false)
@@ -353,15 +357,17 @@ describe('pasteDraftWhenAgentReady', () => {
       foregroundProcess: 'opencode',
       hasChildProcesses: false
     })
+    const onUnconfirmedDelivery = vi.fn()
     const promise = pasteDraftWhenAgentReady({
       tabId: 'tab-1',
       content: ISSUE_URL,
-      agent: 'opencode'
+      agent: 'opencode',
+      onUnconfirmedDelivery
     })
     await flushMicrotasks()
 
     testState.ptyObserver?.(DECSET_BRACKETED_PASTE)
-    await vi.advanceTimersByTimeAsync(8000)
+    await vi.advanceTimersByTimeAsync(20_000)
 
     await expect(promise).resolves.toBe(true)
     expect(testState.sendRuntimePtyInputVerified).toHaveBeenCalledWith(
@@ -369,6 +375,8 @@ describe('pasteDraftWhenAgentReady', () => {
       'pty-1',
       PASTED_ISSUE_URL
     )
+    // The composer was never observed; the caller must be able to hedge its success notice.
+    expect(onUnconfirmedDelivery).toHaveBeenCalledTimes(1)
   })
 
   it('keeps the existing fallback budget for unrelated markerless agents', async () => {
@@ -720,7 +728,8 @@ describe('pasteDraftWhenAgentReady', () => {
     const competing = sendAgentDraftPasteContent(
       {},
       'pty-1',
-      'y'.repeat(AGENT_DRAFT_PASTE_DIRECT_MAX_BYTES + 1)
+      'y'.repeat(AGENT_DRAFT_PASTE_DIRECT_MAX_BYTES + 1),
+      'driving'
     )
     await flushMicrotasks(10)
     expect(writes).toEqual([PASTED_ISSUE_URL])
@@ -896,7 +905,7 @@ describe('pasteDraftWhenAgentReady', () => {
 
   it('yields during large accepted-size preflight before writing agent draft chunks', async () => {
     const content = 'x'.repeat(AGENT_DRAFT_PASTE_DIRECT_MAX_BYTES + 300 * 1024)
-    const promise = sendAgentDraftPasteContent({}, 'pty-1', content)
+    const promise = sendAgentDraftPasteContent({}, 'pty-1', content, 'driving')
 
     await flushMicrotasks(5)
     expect(testState.sendRuntimePtyInputVerified).not.toHaveBeenCalled()
@@ -909,9 +918,9 @@ describe('pasteDraftWhenAgentReady', () => {
   })
 
   it('rejects oversized agent drafts before any PTY write', async () => {
-    await expect(
-      sendAgentDraftPasteContent({}, 'pty-1', 'x'.repeat(AGENT_DRAFT_PASTE_MAX_BYTES + 1))
-    ).resolves.toBe(false)
+    const oversized = 'x'.repeat(AGENT_DRAFT_PASTE_MAX_BYTES + 1)
+    const result = sendAgentDraftPasteContent({}, 'pty-1', oversized, 'driving')
+    await expect(result).resolves.toBe(false)
 
     expect(testState.sendRuntimePtyInputVerified).not.toHaveBeenCalled()
   })
