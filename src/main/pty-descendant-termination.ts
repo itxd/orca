@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { isCodexManagedDaemon } from './pty-codex-managed-daemon'
 import type { JobTerminationOutcome } from './windows/windows-pty-job'
 import { terminateWindowsProcessTree, type WindowsTreeKiller } from './windows-process-tree-kill'
 import {
@@ -19,6 +20,7 @@ export type ProcessTableRow = {
   /** ps lstart text, kept verbatim. Delayed SIGKILL additionally requires an
    * unambiguous capture-second boundary and matching pgid. */
   startedAt: string
+  command?: string
 }
 
 export type DescendantSnapshot = {
@@ -41,9 +43,10 @@ export type SignalSender = (pid: number, signal: NodeJS.Signals) => void
 export function parseProcessTable(psOutput: string): ProcessTableRow[] {
   const rows: ProcessTableRow[] = []
   for (const line of psOutput.split('\n')) {
-    // lstart itself contains spaces ("Mon Jul 13 12:54:47 2026"), so only the
-    // three leading numeric columns are positional.
-    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.+?)\s*$/)
+    // Keep lstart separate from the untruncated command used for ownership checks.
+    const match = line.match(
+      /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\w{3}\s+\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})(?:\s+(.*?))?\s*$/
+    )
     if (!match) {
       continue
     }
@@ -51,7 +54,8 @@ export function parseProcessTable(psOutput: string): ProcessTableRow[] {
       pid: Number(match[1]),
       ppid: Number(match[2]),
       pgid: Number(match[3]),
-      startedAt: match[4]
+      startedAt: match[4],
+      ...(match[5] ? { command: match[5] } : {})
     })
   }
   return rows
@@ -66,7 +70,7 @@ function readFreshProcessTable(
   return new Promise((resolve, reject) => {
     execFile(
       'ps',
-      ['-axo', 'pid=,ppid=,pgid=,lstart='],
+      ['-axww', '-o', 'pid=,ppid=,pgid=,lstart=,command='],
       {
         maxBuffer: PS_MAX_BUFFER_BYTES,
         timeout: timeoutMs,
@@ -187,6 +191,10 @@ export function collectDescendantRows(
         continue
       }
       visited.add(child.pid)
+      // Shared daemons own their entire subtree, including detached tools.
+      if (child.pgid === child.pid && isCodexManagedDaemon(child.command)) {
+        continue
+      }
       descendants.push(child)
       queue.push(child.pid)
     }
