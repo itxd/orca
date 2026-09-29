@@ -4,11 +4,15 @@ export type ProcessTableRow = {
   pgid: number
   /** ps lstart text, kept verbatim. Delayed SIGKILL additionally requires an
    * unambiguous capture-second boundary and matching pgid. */
-  command?: string
   startedAt: string
+  command?: string
+  executable?: string
 }
 
-export function parseProcessTable(psOutput: string): ProcessTableRow[] {
+export function parseProcessTable(
+  psOutput: string,
+  field: 'command' | 'executable' = 'command'
+): ProcessTableRow[] {
   const rows: ProcessTableRow[] = []
   for (const line of psOutput.split('\n')) {
     // Keep lstart separate from the untruncated command used for ownership checks.
@@ -23,9 +27,8 @@ export function parseProcessTable(psOutput: string): ProcessTableRow[] {
       ppid: Number(match[2]),
       pgid: Number(match[3]),
       startedAt: match[4],
-      ...(match[5] ? { command: match[5] } : {})
+      ...(match[5] ? { [field]: match[5] } : {})
     })
   }
   return rows
 }
-
